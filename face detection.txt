@@ -1,0 +1,178 @@
+import cv2
+
+
+def improved_smile_and_position_detection():
+    # 加载级联分类器（增加模型加载校验）
+    face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
+    smile_cascade = cv2.CascadeClassifier('haarcascade_smile.xml')
+
+    # 检查模型是否加载成功
+    if face_cascade.empty():
+        print("错误：无法加载人脸检测模型，请确认haarcascade_frontalface_default.xml文件存在")
+        return
+    if smile_cascade.empty():
+        print("错误：无法加载微笑检测模型，请确认haarcascade_smile.xml文件存在")
+        return
+
+    # 打开摄像头
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("错误：无法打开摄像头")
+        return
+
+    # 连续检测计数器
+    smile_counter = 0
+    CONSECUTIVE_FRAMES = 3  # 连续3帧检测到才判定为微笑
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("警告：无法获取图像帧，将重试...")
+            continue  # 出错时重试而非直接退出
+
+        # 水平翻转，符合镜像视觉习惯
+        frame = cv2.flip(frame, 1)
+        # 获取图像宽高（用于位置判断）
+        height, width = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # 轻微高斯模糊，减少噪声干扰
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+
+        # 检测人脸（优化参数，减少小区域误检）
+        faces = face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=8,
+            minSize=(50, 50)  # 过滤过小的人脸区域
+        )
+
+        # 对每个人脸进行处理
+        for (x, y, w, h) in faces:
+            # 绘制人脸框（绿色）
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+            # ---------------------- 位置识别逻辑 ----------------------
+            # 计算人脸中心坐标（用于判断位置）
+            face_center_x = x + w // 2  # 人脸中心x坐标
+            face_center_y = y + h // 2  # 人脸中心y坐标
+
+            # 水平方向位置判断（左/中/右）
+            if face_center_x < width / 3:
+                horizontal_pos = "left"
+            elif face_center_x < 2 * width / 3:
+                horizontal_pos = "center"
+            else:
+                horizontal_pos = "right"
+
+            # 垂直方向位置判断（上/中/下）
+            if face_center_y < height / 3:
+                vertical_pos = "up"
+            elif face_center_y < 2 * height / 3:
+                vertical_pos = "center"
+            else:
+                vertical_pos = "down"
+
+            # 组合位置描述（如"左上"、"中间"、"右下"）
+            position = f"{horizontal_pos}{vertical_pos}"
+            if position == "centercenter":
+                position = "center"
+            if position == "rightcenter":
+                position = "right"
+            if position == "leftcenter":
+                position = "left"
+            if position == "centerup":
+                position = "up"
+            if position == "centerdown":
+                position = "down"
+            # ----------------------------------------------------------------
+
+            # 仅检测人脸下半部分（微笑主要在嘴巴区域）
+            roi_gray = gray[y + h // 2: y + h, x: x + w]
+            roi_color = frame[y + h // 2: y + h, x: x + w]
+
+            # 微笑检测参数优化
+            smiles = smile_cascade.detectMultiScale(
+                roi_gray,
+                scaleFactor=1.8,
+                minNeighbors=25,
+                minSize=(50, 50),
+                flags=cv2.CASCADE_SCALE_IMAGE
+            )
+
+            # 判断当前帧是否检测到微笑
+            current_smile = len(smiles) > 0
+
+            # 更新连续检测计数器
+            if current_smile:
+                smile_counter += 1
+                # 限制计数器最大值（避免无意义增长）
+                if smile_counter > CONSECUTIVE_FRAMES:
+                    smile_counter = CONSECUTIVE_FRAMES
+            else:
+                smile_counter = 0  # 未检测到则重置
+
+            # 显示微笑状态
+            if smile_counter >= CONSECUTIVE_FRAMES:
+                # 检测到微笑：红色文字
+                cv2.putText(
+                    frame,
+                    "Smile",
+                    (x, y - 20),  # 人脸框左上角上方
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 0, 255),  # 红色
+                    2
+                )
+            else:
+                # 未检测到微笑：蓝色文字
+                cv2.putText(
+                    frame,
+                    "no smile",
+                    (x, y - 20),  # 与Smile同一位置，互斥显示
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (255, 0, 0),  # 蓝色
+                    2
+                )
+
+            # 显示位置信息（黄色文字，在人脸框下方）
+            cv2.putText(
+                frame,
+                f"position:{position}",
+                (x, y + h + 30),  # 人脸框右下角下方，避免重叠
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),  # 黄色
+                2
+            )
+
+            # 绘制微笑区域（蓝色框，可选）
+            for (sx, sy, sw, sh) in smiles:
+                cv2.rectangle(roi_color, (sx, sy), (sx + sw, sy + sh), (255, 0, 0), 2)
+
+        # 显示退出提示
+        cv2.putText(
+            frame,
+            "Press 'q' to exit",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2
+        )
+        cv2.imshow('Smile & Position Detection', frame)
+
+        # 退出逻辑，按q时退出程序
+        key = cv2.waitKey(1)
+        if key == ord('q'):
+            break
+
+    # 释放资源
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    improved_smile_and_position_detection()
+    print("程序已正常结束")
+    
